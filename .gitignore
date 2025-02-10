@@ -1,0 +1,25 @@
+# Flutter/Dart specific
+**/build/
+**/.dart_tool/
+**/.idea/
+**/.vscode/
+**/pubspec.lock
+**/flutter_gen/
+
+# IDE settings (optional)
+**/.packages
+**/.metadata
+**/android/.cxx/
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Flutter.podspec
+**/web/.dart_tool/
+
+# Misc
+.DS_Store
+*.iml
+*.log
+*.swp
+*.swo
+*.swn
+*.bak
