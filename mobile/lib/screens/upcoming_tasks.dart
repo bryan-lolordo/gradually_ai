@@ -3,7 +3,7 @@ import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 
 class UpcomingTasksScreen extends StatefulWidget {
-  const UpcomingTasksScreen({Key? key}) : super(key: key);
+  const UpcomingTasksScreen({super.key});
 
   @override
   _UpcomingTasksScreenState createState() => _UpcomingTasksScreenState();

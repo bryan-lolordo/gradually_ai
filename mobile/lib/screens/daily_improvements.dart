@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 class DailyImprovementsScreen extends StatefulWidget {
-  const DailyImprovementsScreen({Key? key}) : super(key: key);
+  const DailyImprovementsScreen({super.key});
 
   @override
   _DailyImprovementsScreenState createState() => _DailyImprovementsScreenState();

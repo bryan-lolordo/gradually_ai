@@ -23,3 +23,31 @@
 *.swo
 *.swn
 *.bak
+
+# 🔹 Ignore environment variables file
+.env
+
+# 🔹 Python & FastAPI specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+venv/
+.venv/
+Pipfile
+Pipfile.lock
+migrations/
+
+# 🔹 CrewAI & Langchain specific
+**/crewai_dev/__pycache__/
+**/crewai_dev/*.log
+**/crewai_dev/*.db
+**/crewai_dev/cache/
+**/crewai_dev/temp/
+**/crewai_dev/output/
+**/crewai_dev/*.pkl
+
+# 🔹 Virtual environment (if using Poetry or Conda)
+poetry.lock
+conda-meta/

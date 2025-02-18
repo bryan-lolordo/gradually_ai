@@ -6,7 +6,7 @@ void main() {
 }
 
 class GraduallyAI extends StatelessWidget {
-  const GraduallyAI({Key? key}) : super(key: key);
+  const GraduallyAI({super.key});
 
   @override
   Widget build(BuildContext context) {

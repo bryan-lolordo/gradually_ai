@@ -5,7 +5,7 @@ import 'daily_agenda_screen.dart';  // Ensure the file path is correct
 import 'calendar_screen.dart';  // Ensure the file path is correct
 
 class NavigatorScreen extends StatelessWidget {
-  const NavigatorScreen({Key? key}) : super(key: key);
+  const NavigatorScreen({super.key});
 
   @override
   Widget build(BuildContext context) {

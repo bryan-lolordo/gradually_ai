@@ -1,0 +1,46 @@
+extract_api_endpoints:
+  description: >
+    Read api.py and models.py to identify all existing API endpoints and their relationship with the database models.
+    Extract database schemas for habits, schedules, and goals to ensure API logic correctly interacts with them.
+    Provide refactored FastAPI code that optimizes each endpoint by improving efficiency, security, and maintainability.
+  expected_output: >
+    - A JSON list of API endpoints with descriptions, parameters, and expected outputs.
+    - A summary of relevant database models from models.py.
+    - Optimized FastAPI code for existing endpoints, ensuring best practices such as async database queries, dependency injection, 
+      and structured response models.
+  agent: code_analyzer
+
+optimize_endpoints:
+  description: >
+    Refactor and optimize FastAPI endpoints for better performance, security, and maintainability.
+    Ensure async database queries, proper dependency injection, and improved response handling.
+  expected_output: >
+    Refactored API functions that optimize database queries, prevent N+1 issues, and improve API response times.
+  agent: optimization_engineer
+
+analyze_habit_ai:
+  description: >
+    Evaluate AI-powered habit scheduling logic and ensure it correctly adapts user schedules based on historical data.
+    Recommend and implement optimizations for daily schedule generation.
+    Generate FastAPI-compatible AI logic that enhances habit tracking, goal adaptation, and predictive scheduling.
+  expected_output: >
+    - AI-powered habit scheduling code enhancements.
+    - Improved logic for adjusting user schedules dynamically based on past behavior.
+    - New AI-driven features that provide insights and recommendations for users.
+  agent: habit_analyst
+
+enhance_security:
+  description: >
+    Perform a security audit of API authentication, JWT handling, and database access.
+    Identify vulnerabilities, improve token security, and enforce proper role-based access control.
+  expected_output: >
+    Patched security vulnerabilities, improved authentication flows, and a hardened API security model.
+  agent: security_agent
+
+add_new_endpoints:
+  description: >
+    Design and implement new FastAPI endpoints required for full Gradually AI functionality.
+    Ensure that new endpoints integrate smoothly with existing database models and business logic.
+  expected_output: >
+    New API endpoints appended to api.py with proper request validation, authentication, and database integration.
+  agent: api_extender

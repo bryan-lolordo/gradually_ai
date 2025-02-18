@@ -3,7 +3,7 @@ import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 
 class DailyAgendaScreen extends StatefulWidget {
-  const DailyAgendaScreen({Key? key}) : super(key: key);
+  const DailyAgendaScreen({super.key});
 
   @override
   _DailyAgendaScreenState createState() => _DailyAgendaScreenState();
