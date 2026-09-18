@@ -21,6 +21,13 @@ there.
 This repository is kept as it was. Nothing below this README has been
 changed since February 2025, on purpose: the history is the record.
 
+One more piece exists off `main`: the branch
+[`march-2025-frontend`](https://github.com/bryan-lolordo/gradually_ai/tree/march-2025-frontend)
+holds the work from **February 28 to March 2, 2025**, uncommitted until
+September 2026. It restructures the backend into packages, drops
+`crewai_dev/`, and adds a React + Vite + TypeScript `frontend/`. That is
+the last thing built as Gradually before it became lifeOS.
+
 ## What is here
 
 | Folder | What it is |
