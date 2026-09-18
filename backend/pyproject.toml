@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gradually_ai"
+version = "0.1.0"
+description = "AI-powered scheduling and productivity app"
+requires-python = ">=3.8"
+dependencies = [
+    "fastapi>=0.68.0",
+    "uvicorn>=0.15.0",
+    "sqlalchemy>=1.4.0",
+    "python-dotenv>=0.19.0",
+    "psycopg2-binary>=2.9.0",
+    "pydantic>=1.8.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-multipart>=0.0.5",
+    "redis>=4.0.0",
+    "requests>=2.26.0"
+] 

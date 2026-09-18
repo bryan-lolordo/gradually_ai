@@ -1,0 +1,53 @@
+# FastAPI and ASGI server
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+
+# Database
+sqlalchemy==2.0.27
+psycopg2-binary==2.9.9  # PostgreSQL adapter
+python-dotenv==1.0.1
+
+# Authentication and Security
+python-jose[cryptography]==3.3.0  # JWT tokens
+passlib[bcrypt]==1.7.4  # Password hashing
+python-multipart==0.0.6  # Form data parsing
+bcrypt==4.1.2
+
+# Validation and Settings
+pydantic>=2.5.0
+pydantic-settings>=2.0.0
+email-validator==2.1.0.post1
+
+# Time and Date handling
+pytz==2024.1
+python-dateutil==2.8.2
+tzlocal==5.2
+
+# Testing
+pytest==8.0.1
+pytest-asyncio==0.23.5
+httpx==0.26.0  # For async HTTP testing
+
+# Logging and Monitoring
+structlog==24.1.0
+
+# Development tools
+black==24.1.1  # Code formatting
+flake8==7.0.0  # Linting
+mypy==1.8.0    # Type checking
+
+# Caching
+redis==5.0.1
+fastapi-cache2==0.2.1
+
+# Time and Date
+tzlocal==5.2
+
+# Testing
+pytest==8.0.1
+
+# Logging
+python-json-logger==2.0.7
+
+# Development
+isort==5.13.2 

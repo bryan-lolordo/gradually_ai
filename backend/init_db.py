@@ -1,10 +1,17 @@
-from database import engine, Base  # Import engine and Base from database.py
+import asyncio
+from database import init_db, test_connection
 
-def init_db():
-    """Initialize database tables if they don't exist."""
-    print("🔄 Checking database tables...")
-    Base.metadata.create_all(bind=engine)  # Creates tables if they don’t exist
-    print("✅ Database tables created successfully!")
+async def main():
+    print("🔄 Testing database connection...")
+    if test_connection():
+        print("✅ Database connection successful!")
+        print("\n🔄 Initializing database tables...")
+        if await init_db():
+            print("✅ Database initialization successful!")
+        else:
+            print("❌ Database initialization failed!")
+    else:
+        print("❌ Database connection failed!")
 
 if __name__ == "__main__":
-    init_db()  # Run initialization if this script is executed directly
+    asyncio.run(main()) 
