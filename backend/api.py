@@ -2,6 +2,8 @@ import os
 import redis
 import re
 import pytz
+import threading
+import logging
 from openai import OpenAI
 from datetime import datetime, time, date, timedelta
 from tzlocal import get_localzone  
@@ -15,6 +17,7 @@ from fastapi_cache.decorator import cache
 from pydantic import BaseModel
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
+from starlette.responses import JSONResponse
 
 from database import SessionLocal  # ✅ Centralized database connection
 from models import User, BaselineSchedule, DailySchedule, Task, HabitAdjustment, ScheduleAdjustment
@@ -25,6 +28,10 @@ from apscheduler.triggers.cron import CronTrigger
 load_dotenv()
 client = OpenAI()
 
+# ✅ Configure Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
 # Initialize FastAPI app
 app = FastAPI()
 
@@ -32,8 +39,8 @@ app = FastAPI()
 try:
     redis_client = redis.Redis(host="localhost", port=6379, db=0, socket_connect_timeout=5)
     FastAPICache.init(RedisBackend(redis_client), prefix="gradually_ai")
-except redis.ConnectionError:
-    print("❌ Redis connection failed. Caching is disabled.")
+except redis.exceptions.ConnectionError:
+    logger.error("❌ Redis connection failed. Caching is disabled.")
     redis_client = None
 
 # ✅ Password hashing
@@ -47,7 +54,7 @@ def get_db():
     finally:
         db.close()
 
-# Define your request model above the endpoint function
+# ✅ Request Models
 class RegisterUserRequest(BaseModel):
     username: str
     email: str
@@ -59,38 +66,54 @@ class LoginRequest(BaseModel):
 
 class BaselineTaskRequest(BaseModel):
     task_name: str
-    scheduled_time: str  # "HH:MM:SS" format
-    goal_time: Optional[str] = None  # Optional
+    scheduled_time: str  
+    goal_time: Optional[str] = None  
 
 class BaselineScheduleRequest(BaseModel):
     user_id: int
     tasks: List[BaselineTaskRequest]
 
-# Define Pydantic model for request body
 class TaskLogRequest(BaseModel):
     user_id: int
     task_name: str
     completed: bool
-    scheduled_time: Optional[str] = None  # Expected format: "HH:MM:SS"
-    goal_time: Optional[str] = None  # Optional goal time
-    actual_completed_time: Optional[str] = None  # Expects "HH:MM:SS"
-    log_date: Optional[str] = None  # Expects "YYYY-MM-DD"
+    scheduled_time: Optional[str] = None  
+    goal_time: Optional[str] = None  
+    actual_completed_time: Optional[str] = None  
+    log_date: Optional[str] = None  
 
 class MultipleTaskLogRequest(BaseModel):
-    tasks: list[TaskLogRequest]
-
+    tasks: List[TaskLogRequest]
 
 class HabitUpdateRequest(BaseModel):
-    habit: str  # ✅ Add the habit name
-    status: str  # Either "accepted" or "rejected"
+    habit: str  
+    status: str  
 
-# Function to add the next day's scheduled tasks
+# ✅ Register User
+@app.post("/users/register")
+def register_user(request: RegisterUserRequest, db: Session = Depends(get_db)):
+    hashed_password = pwd_context.hash(request.password)
+    new_user = User(username=request.username, email=request.email, password_hash=hashed_password)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return JSONResponse(status_code=201, content={"id": new_user.id, "username": new_user.username})
+
+# ✅ User Login
+@app.post("/users/login")
+def login_user(request: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user or not pwd_context.verify(request.password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Invalid email or password")
+    return {"user_id": user.id}
+
+# ✅ Add Next Day Tasks
 def add_next_day_tasks():
     db = SessionLocal()
     tomorrow = (datetime.utcnow() + timedelta(days=1)).date()
 
-    # Get all distinct user task schedules
     user_tasks = db.query(Task.user_id, Task.task_name, Task.scheduled_time, Task.goal_time).distinct().all()
+    new_tasks = []
 
     for user_id, task_name, scheduled_time, goal_time in user_tasks:
         existing_task = db.query(Task).filter(
@@ -100,7 +123,7 @@ def add_next_day_tasks():
         ).first()
 
         if not existing_task:
-            new_task = Task(
+            new_tasks.append(Task(
                 user_id=user_id,
                 task_name=task_name,
                 scheduled_time=scheduled_time,
@@ -108,30 +131,14 @@ def add_next_day_tasks():
                 completed=False,
                 log_date=tomorrow,
                 created_at=datetime.utcnow()
-            )
-            db.add(new_task)
+            ))
 
-    db.commit()
+    if new_tasks:
+        db.add_all(new_tasks)
+        db.commit()
+    
     db.close()
-    print(f"✅ Tasks added for {tomorrow}")
-
-# Register User
-@app.post("/users/register")
-def register_user(request: RegisterUserRequest, db: Session = Depends(get_db)):
-    hashed_password = pwd_context.hash(request.password)
-    new_user = User(username=request.username, email=request.email, password_hash=hashed_password)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return {"id": new_user.id, "username": new_user.username, "email": new_user.email}
-
-# User Login
-@app.post("/users/login")
-def login_user(request: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == request.email).first()
-    if not user or not pwd_context.verify(request.password, user.password_hash):
-        raise HTTPException(status_code=400, detail="Invalid email or password")
-    return {"user_id": user.id}
+    logger.info(f"✅ Tasks added for {tomorrow}")
 
 # Set Baseline Schedule
 @app.post("/baseline_schedule/set")
@@ -234,155 +241,150 @@ def get_baseline_schedule(user_id: int, request: Request, db: Session = Depends(
         "tasks": adjusted_tasks
     }
 
-# Generate Daily Schedule
-from models import ScheduleAdjustment  # Import the new model
-
+# ✅ Generate Dynamic Daily Schedule with Adjustments
 @app.post("/daily_schedule/generate/{user_id}")
-def generate_daily_schedule(user_id: int, db: Session = Depends(get_db), date_str: Optional[str] = None):
-    """Generates a Daily Schedule for the specified date (defaults to today) with rule-based time adjustments."""
-    
-    user_current_tz = str(get_localzone())
-    try:
-        user_tz = pytz.timezone(user_current_tz)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid timezone detected.")
+def generate_daily_schedule(user_id: Optional[int] = None, db: Session = Depends(get_db), date_str: Optional[str] = None, auto: bool = False):
+    """Generates a Daily Schedule dynamically with rule-based time adjustments.
 
-    target_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else datetime.now(user_tz).date()
-    existing_schedule = db.query(DailySchedule).filter(
-        DailySchedule.user_id == user_id,
-        DailySchedule.log_date == target_date
-    ).first()
+    - If `user_id` is provided, generates for that user.
+    - If `auto=True`, runs for all users (used by the scheduler).
+    """
 
-    if existing_schedule:
-        return {"message": f"Daily schedule for {target_date} already exists. No changes were made."}
+    if not auto and not user_id:
+        raise HTTPException(status_code=400, detail="User ID is required for manual schedule generation.")
 
-    past_days = target_date - timedelta(days=7)
-    past_logs = db.query(DailySchedule).filter(
-        DailySchedule.user_id == user_id,
-        DailySchedule.log_date >= past_days,
-        DailySchedule.status == "completed"
-    ).all()
-    
-    task_actual_times = {}
-    for task in past_logs:
-        if task.task_name not in task_actual_times:
-            task_actual_times[task.task_name] = []
-        if task.actual_completed_time:
+    users = db.query(User.id).all() if auto else [(user_id,)]
+
+    for user_tuple in users:
+        user_id = user_tuple[0]
+
+        # ✅ Get User's Timezone
+        user_tz = db.query(BaselineSchedule.user_timezone).filter(
+            BaselineSchedule.user_id == user_id
+        ).distinct().first()
+        user_tz = pytz.timezone(user_tz[0] if user_tz else "UTC")
+
+        # ✅ Set the date based on user's timezone
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else datetime.now(user_tz).date()
+
+        # ✅ Skip if schedule already exists
+        if db.query(DailySchedule).filter(DailySchedule.user_id == user_id, DailySchedule.log_date == target_date).first():
+            continue  
+
+        # ✅ Get past 7 days of completed tasks
+        past_days = target_date - timedelta(days=7)
+        past_logs = db.query(DailySchedule).filter(
+            DailySchedule.user_id == user_id,
+            DailySchedule.log_date >= past_days,
+            DailySchedule.status == "completed",
+            DailySchedule.actual_completed_time.isnot(None)
+        ).all()
+
+        # ✅ Store actual completion times of tasks
+        task_actual_times = {task.task_name: [] for task in past_logs}
+        for task in past_logs:
             task_actual_times[task.task_name].append(task.actual_completed_time.time())
 
-    baseline_tasks = db.query(BaselineSchedule).filter(BaselineSchedule.user_id == user_id).all()
-    
-    for task in baseline_tasks:
-        new_scheduled_time = task.scheduled_time
-        previous_scheduled_time = None
+        # ✅ Fetch user's baseline schedule
+        baseline_tasks = db.query(BaselineSchedule).filter(BaselineSchedule.user_id == user_id).all()
+        
+        for task in baseline_tasks:
+            new_scheduled_time = task.scheduled_time
+            previous_scheduled_time = None
 
-        # ✅ Check if task exists in previous schedule & store old time
-        last_scheduled_entry = db.query(DailySchedule).filter(
-            DailySchedule.user_id == user_id,
-            DailySchedule.task_name == task.task_name
-        ).order_by(DailySchedule.log_date.desc()).first()
+            # ✅ Fetch last scheduled time
+            last_scheduled_entry = db.query(DailySchedule).filter(
+                DailySchedule.user_id == user_id,
+                DailySchedule.task_name == task.task_name
+            ).order_by(DailySchedule.log_date.desc()).first()
 
-        if last_scheduled_entry:
-            previous_scheduled_time = last_scheduled_entry.scheduled_time
+            if last_scheduled_entry:
+                previous_scheduled_time = last_scheduled_entry.scheduled_time
 
-        # ✅ Rule-Based Adjustment: Shift scheduled time toward goal time
-        adjustment_reason = "No change"
-        if task.task_name in task_actual_times and task.goal_time:
-            past_actuals = [datetime.combine(datetime.today(), t) for t in task_actual_times[task.task_name]]
-            if past_actuals:
-                avg_actual_time = sum((t.hour * 60 + t.minute) for t in past_actuals) // len(past_actuals)
-                avg_actual_time = timedelta(minutes=avg_actual_time)
-                goal_time_delta = timedelta(hours=task.goal_time.hour, minutes=task.goal_time.minute)
+            # ✅ Rule-Based Adjustment: Shift scheduled time dynamically
+            adjustment_reason = "No change"
+            if task.task_name in task_actual_times and task.goal_time:
+                past_actuals = [datetime.combine(datetime.today(), t) for t in task_actual_times[task.task_name]]
+                if past_actuals:
+                    avg_actual_time = sum((t.hour * 60 + t.minute) for t in past_actuals) // len(past_actuals)
+                    avg_actual_time = timedelta(minutes=avg_actual_time)
+                    goal_time_delta = timedelta(hours=task.goal_time.hour, minutes=task.goal_time.minute)
 
-                if avg_actual_time < goal_time_delta:
-                    new_scheduled_time = (datetime.combine(datetime.today(), task.scheduled_time) - timedelta(minutes=5)).time()
-                    adjustment_reason = "Shifted earlier toward goal time"
-                elif avg_actual_time > goal_time_delta:
-                    new_scheduled_time = (datetime.combine(datetime.today(), task.scheduled_time) + timedelta(minutes=5)).time()
-                    adjustment_reason = "Shifted later based on completion trends"
+                    if avg_actual_time < goal_time_delta - timedelta(minutes=3):
+                        new_scheduled_time = (datetime.combine(datetime.today(), task.scheduled_time) - timedelta(minutes=5)).time()
+                        adjustment_reason = "Shifted earlier toward goal time"
+                    elif avg_actual_time > goal_time_delta + timedelta(minutes=3):
+                        new_scheduled_time = (datetime.combine(datetime.today(), task.scheduled_time) + timedelta(minutes=5)).time()
+                        adjustment_reason = "Shifted later based on completion trends"
 
-        # ✅ Log adjustment if scheduled time changed
-        if previous_scheduled_time and previous_scheduled_time != new_scheduled_time:
-            adjustment_entry = ScheduleAdjustment(
+            # ✅ Log adjustment if changed
+            if previous_scheduled_time and previous_scheduled_time != new_scheduled_time:
+                db.add(ScheduleAdjustment(
+                    user_id=user_id,
+                    task_name=task.task_name,
+                    previous_scheduled_time=previous_scheduled_time,
+                    new_scheduled_time=new_scheduled_time,
+                    adjustment_reason=adjustment_reason,
+                    log_date=target_date
+                ))
+
+            # ✅ Insert into `daily_schedules`
+            db.add(DailySchedule(
                 user_id=user_id,
                 task_name=task.task_name,
+                scheduled_time=new_scheduled_time,
                 previous_scheduled_time=previous_scheduled_time,
-                new_scheduled_time=new_scheduled_time,
-                adjustment_reason=adjustment_reason,
-                log_date=target_date
-            )
-            db.add(adjustment_entry)
-
-        new_task = DailySchedule(
-            user_id=user_id,
-            task_name=task.task_name,
-            scheduled_time=new_scheduled_time,
-            previous_scheduled_time=previous_scheduled_time,  # ✅ Store old schedule time
-            goal_time=task.goal_time,
-            log_date=target_date,
-            user_timezone=user_current_tz,
-            status="pending"
-        )
-        db.add(new_task)
+                goal_time=task.goal_time,
+                log_date=target_date,
+                user_timezone=user_tz.zone,
+                status="pending"
+            ))
     
     db.commit()
     return {"message": f"Daily schedule for {target_date} generated successfully with rule-based adjustments."}
 
-
-
-# ✅ Background Job: Run Daily Schedule Generation at Midnight
+# ✅ Background Job: Automate Daily Schedule Generation
 def schedule_daily_generation():
-    """Automates next-day schedule generation at midnight UTC."""
     db = SessionLocal()
-    users = db.query(User.id).all()
+    try:
+        generate_daily_schedule(auto=True, db=db)
+        logger.info("✅ Next-day schedule dynamically generated at midnight UTC.")
+    except Exception as e:
+        logger.error(f"❌ Error in schedule generation: {e}")
+    finally:
+        db.close()
 
-    for user in users:
-        user_id = user.id
-
-        # ✅ Detect User's Timezone
-        user_tz = db.query(BaselineSchedule.user_timezone).filter(BaselineSchedule.user_id == user_id).scalar()
-        if not user_tz:
-            user_tz = "UTC"  # Default to UTC if no timezone is found
-        user_tz = pytz.timezone(user_tz)
-
-        # ✅ Get the next day's date in the user's timezone
-        next_day = datetime.now(user_tz).date() + timedelta(days=1)
-
-        # ✅ Clear only planned tasks (keep ad-hoc)
-        db.query(DailySchedule).filter(
-            DailySchedule.user_id == user_id, 
-            DailySchedule.log_date == next_day,
-            DailySchedule.scheduled_time.isnot(None)  # ✅ Ensures ad-hoc tasks are not deleted
-        ).delete()
-
-        # ✅ Copy from baseline schedule
-        baseline_tasks = db.query(BaselineSchedule).filter(BaselineSchedule.user_id == user_id).all()
-
-        for task in baseline_tasks:
-            new_task = DailySchedule(
-                user_id=user_id,
-                task_name=task.task_name,
-                scheduled_time=task.scheduled_time,
-                goal_time=task.goal_time,
-                log_date=next_day,
-                user_timezone=user_tz.zone,
-                status="pending"
-            )
-            db.add(new_task)
-
-    db.commit()
-    db.close()
-    print(f"✅ Next-day schedule generated at midnight UTC.")
-
-# ✅ Scheduler: Run `schedule_daily_generation` at 12:00 AM UTC
+# ✅ Initialize & Start Scheduler
 scheduler = BackgroundScheduler()
-scheduler.add_job(schedule_daily_generation, "cron", hour=0, minute=0)  # Runs at midnight UTC
-scheduler.start()
 
+# ✅ Prevent duplicate job additions
+if not any(job.id == "daily_schedule" for job in scheduler.get_jobs()):
+    scheduler.add_job(schedule_daily_generation, "cron", hour=0, minute=0, id="daily_schedule")
+
+def start_scheduler():
+    """Ensures the scheduler starts safely."""
+    try:
+        if scheduler.state == 0:  # ✅ Check if scheduler is stopped
+            scheduler.start()
+            logger.info("✅ Scheduler started successfully.")
+            print("✅ Scheduler started successfully.")
+    except Exception as e:
+        logger.error(f"❌ Scheduler failed to start: {e}")
+        print(f"❌ Scheduler failed to start: {e}")
+
+# ✅ Start Scheduler in a Background Thread
+if __name__ == "__main__":
+    print("🔄 Starting FastAPI & Scheduler...")
+    scheduler_thread = threading.Thread(target=start_scheduler, daemon=True)
+    scheduler_thread.start()
+    time.sleep(3)  # ✅ Allow time for initialization
+
+# ✅ Shutdown Scheduler When API Stops
 @app.on_event("shutdown")
 def shutdown_event():
     """Shutdown the scheduler when FastAPI stops."""
     scheduler.shutdown()
+    logger.info("🛑 Scheduler shutdown successfully.")
 
 # Get Daily Schedule
 @app.get("/daily_schedule/{user_id}")
@@ -447,80 +449,109 @@ def get_daily_schedule(user_id: int, request: Request, db: Session = Depends(get
 # ✅ Task Logging API
 @app.post("/tasks/log")
 def log_tasks(request: MultipleTaskLogRequest, db: Session = Depends(get_db)):
-    """Logs task completion. If the task isn't in daily_schedules, it is added as an ad-hoc task."""
+    """Logs task completion and ensures actual_completed_time is stored in UTC."""
 
     updated_tasks = []
     user_current_tz = str(get_localzone())
 
     try:
         user_tz = pytz.timezone(user_current_tz)
-    except Exception:
+    except Exception as e:
+        logger.error(f"❌ Invalid timezone detected: {e}")
         raise HTTPException(status_code=400, detail="Invalid timezone detected.")
 
     today_utc = datetime.now(pytz.utc).date()
 
     for task_data in request.tasks:
-        log_date = datetime.strptime(task_data.log_date, "%Y-%m-%d").date() if task_data.log_date else today_utc
+        try:
+            # ✅ Ensure log_date is valid
+            log_date = datetime.strptime(task_data.log_date, "%Y-%m-%d").date() if task_data.log_date else today_utc
 
-        task = db.query(DailySchedule).filter(
-            DailySchedule.user_id == task_data.user_id,
-            DailySchedule.task_name == task_data.task_name,
-            DailySchedule.log_date == log_date
-        ).first()
+            # ✅ Fetch or create task entry
+            task = db.query(DailySchedule).filter(
+                DailySchedule.user_id == task_data.user_id,
+                DailySchedule.task_name == task_data.task_name,
+                DailySchedule.log_date == log_date
+            ).first()
 
-        if not task:
-            task = DailySchedule(
-                user_id=task_data.user_id,
-                task_name=task_data.task_name,
-                log_date=log_date,
-                user_timezone=user_current_tz,
-                status="pending"
-            )
-            db.add(task)
-            db.commit()
+            if not task:
+                task = DailySchedule(
+                    user_id=task_data.user_id,
+                    task_name=task_data.task_name,
+                    log_date=log_date,
+                    user_timezone=user_current_tz,
+                    status="pending"
+                )
+                db.add(task)
+                db.commit()
 
-        if task_data.actual_completed_time:
-            local_datetime = user_tz.localize(datetime.combine(log_date, datetime.strptime(task_data.actual_completed_time, "%H:%M:%S").time()))
-            utc_time = local_datetime.astimezone(pytz.utc)
-        else:
-            utc_time = datetime.now(pytz.utc)
+            # ✅ Convert local completed time to UTC before storing
+            if task_data.actual_completed_time:
+                local_time = datetime.combine(log_date, datetime.strptime(task_data.actual_completed_time, "%H:%M:%S").time())
+                local_time = user_tz.localize(local_time)  # Ensure it's timezone-aware
+                utc_time = local_time.astimezone(pytz.utc)  # Convert to UTC
+            else:
+                utc_time = datetime.now(pytz.utc)  # Default to now in UTC
 
-        task.status = "completed" if task_data.completed else "pending"
-        task.actual_completed_time = utc_time
+            # ✅ Update task details
+            task.status = "completed" if task_data.completed else "pending"
+            task.actual_completed_time = utc_time
 
-        db.commit()
-        updated_tasks.append({
-            "task_name": task.task_name,
-            "log_date": str(log_date),
-            "status": task.status,
-            "actual_completed_time": str(utc_time.time()) if task.actual_completed_time else None
-        })
+            updated_tasks.append({
+                "task_name": task.task_name,
+                "log_date": str(log_date),
+                "status": task.status,
+                "actual_completed_time": str(utc_time.time()) if task.actual_completed_time else None
+            })
+
+        except Exception as e:
+            logger.error(f"❌ Error logging task '{task_data.task_name}': {e}")
+            continue  # Skip invalid task and move to next
+
+    db.commit()  # ✅ Commit only once at the end for efficiency
 
     return {"message": "Tasks logged successfully", "tasks": updated_tasks}
 
 # Parse AI Suggestion
 def parse_ai_suggestion(suggestion: str):
     """Extracts habit, suggested time, and reason from AI response."""
-    
-    # ✅ Ensure valid structure: "Habit Name: Suggested Time - Reason"
-    pattern = r"^(.*?):\s*(\d{1,2}:\d{2}:\d{2})\s*-\s*(.*)$"
+
+    # ✅ Primary pattern: "X. Habit Name: Suggested Time - Reason"
+    pattern = r"^\s*\d+\.\s*\*\*(.+?)\*\*:\s*(\d{1,2}:\d{2}:\d{2})?\s*-\s*(.+)$"
     match = re.match(pattern, suggestion.strip())
 
     if match:
-        habit = match.group(1).strip()
-        suggested_value = match.group(2).strip()
-        reason = match.group(3).strip()
+        habit = match.group(1).strip()  # Extract habit name
+        suggested_value = match.group(2).strip() if match.group(2) else None  # Extract suggested time (if provided)
+        reason = match.group(3).strip()  # Extract reason
         return habit, suggested_value, reason
+
+    # ✅ Fallback: Handle habit without time (e.g., "X. Habit Name: Reason")
+    pattern_no_time = r"^\s*\d+\.\s*\*\*(.+?)\*\*:\s*(.+)$"
+    match_no_time = re.match(pattern_no_time, suggestion.strip())
+
+    if match_no_time:
+        habit = match_no_time.group(1).strip()
+        reason = match_no_time.group(2).strip()
+        return habit, None, reason  # No suggested time given
+
+    # ✅ Last Fallback: Extract habit names with no structure
+    pattern_habit_only = r"^\s*\*\*(.+?)\*\*"
+    match_habit_only = re.match(pattern_habit_only, suggestion.strip())
+
+    if match_habit_only:
+        habit = match_habit_only.group(1).strip()
+        return habit, None, suggestion.strip()  # Treat full text as reason
 
     # 🚨 If AI response is invalid, return None
     return None, None, suggestion
+
 
 # AI Habit Adjustments
 @app.get("/ai/habit_adjustments/{user_id}")
 def generate_ai_habit_adjustments(user_id: int, db: Session = Depends(get_db)):
     """Uses AI to analyze a user's daily schedule & suggest habit improvements."""
 
-    # ✅ Fetch today's completed tasks from `daily_schedules`
     today_utc = datetime.now(pytz.utc).date()
     tasks = db.query(DailySchedule).filter(
         DailySchedule.user_id == user_id,
@@ -543,19 +574,36 @@ def generate_ai_habit_adjustments(user_id: int, db: Session = Depends(get_db)):
 
     # ✅ Ask GPT-4 for habit improvement suggestions
     response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[
-        {"role": "system", "content": "You are a habit improvement coach."},
-        {"role": "user", "content": f"Here is my current habit schedule: {habit_data}. How should I adjust to better reach my goal times?"}
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a habit improvement coach. Provide numbered suggestions in this format: '<number>. **Habit Name**: <Suggested Time (if applicable)> - <Reason>'."},
+            {"role": "user", "content": f"Here is my current habit schedule: {habit_data}. How should I adjust to better reach my goal times?"}
         ]
     )
     ai_suggestions = response.choices[0].message.content
+
+    logger.info(f"🔍 AI Response:\n{ai_suggestions}")
 
     # ✅ Store AI-generated habit adjustments
     adjustments = []
     for suggestion in ai_suggestions.split("\n"):
         if suggestion.strip():
             habit, suggested_value, reason = parse_ai_suggestion(suggestion)
+
+            # ✅ Debugging log
+            logger.info(f"🔍 Parsed AI Suggestion → Habit: {habit}, Time: {suggested_value}, Reason: {reason}")
+
+            # ✅ Skip invalid adjustments
+            if not habit or habit == "None":
+                logger.warning(f"❌ Skipping invalid adjustment: {habit}, {suggested_value}, {reason}")
+                continue
+
+            # ✅ Convert suggested_value to `datetime.time` if it exists
+            try:
+                suggested_time = datetime.strptime(suggested_value, "%H:%M:%S").time() if suggested_value else None
+            except ValueError:
+                logger.warning(f"❌ Skipping invalid suggested time format: {suggested_value}")
+                continue  # Skip this entry if the format is incorrect
 
             # ✅ Find the current scheduled time for this habit
             current_value = db.query(DailySchedule.scheduled_time).filter(
@@ -564,28 +612,26 @@ def generate_ai_habit_adjustments(user_id: int, db: Session = Depends(get_db)):
                 DailySchedule.log_date == today_utc
             ).scalar()
 
-            # ✅ Check if habit, suggested_value, and reason are valid
-            if habit and suggested_value and reason:
-                adjustment = HabitAdjustment(
-                    user_id=user_id,
-                    habit=habit,
-                    current_value=current_value,
-                    suggested_value=suggested_value,
-                    reason=reason,
-                    status="pending",
-                    log_date=today_utc
-                )
-                db.add(adjustment)
-                adjustments.append({
-                    "habit": habit,
-                    "suggested_value": suggested_value,
-                    "reason": reason
-                })
-            else:
-                print(f"❌ Skipping invalid adjustment: {habit}, {suggested_value}, {reason}")
+            # ✅ Insert adjustment into DB
+            adjustment = HabitAdjustment(
+                user_id=user_id,
+                habit=habit,
+                current_value=current_value,
+                suggested_value=suggested_time,  # ✅ Store as `datetime.time`
+                reason=reason,
+                status="pending",
+                log_date=today_utc
+            )
+            db.add(adjustment)
+            adjustments.append({
+                "habit": habit,
+                "suggested_value": suggested_time.strftime("%H:%M:%S") if suggested_time else None,
+                "reason": reason
+            })
 
     db.commit()
     return {"ai_recommendations": adjustments}
+
 
 # Get Schedule Adjustments
 @app.get("/schedule_adjustments/{user_id}")
